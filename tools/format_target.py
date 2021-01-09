@@ -2,68 +2,94 @@
 
 import argparse
 import os
-import io
-
-from babel.messages import pofile
+import re
 
 PO_EXT = ".po"
 
 
-def load_catalogs(top_dir):
-    catalogs = {}
+def load_po_files(top_dir):
+    po_files = {}
     for root, dirs, files in os.walk(top_dir, topdown=False):
         for file in files:
             if file.endswith(PO_EXT):
                 path = os.path.join(root, file)
                 rel_path = os.path.relpath(path, top_dir)
-                with io.open(path, 'rb') as f:
-                    catalogs[rel_path] = pofile.read_po(f)
+                with open(path) as f:
+                    po_files[rel_path] = f.readlines()
             else:
                 continue
-    return catalogs
+    return po_files
 
 
-def load_lines_with_header_len(path):
-    with open(path) as f:
-        lines = f.readlines()
+def get_header_len(lines):
     header_len = lines.index('\n') if '\n' in lines else len(lines)
-    return lines, header_len
+    return header_len
+
+
+def wrap_msgstr_line(line):
+    wrapped_lines = []
+    match = re.match(r'^msgstr "(.*)"$', line)
+    content = match.group(1)
+    if len(content) >= 70:
+        wrapped_lines.append('msgstr ""\n')
+        while len(content) > 76:
+            idx = content.rfind(' ', 0, 77)
+            hyphen_idx = content.rfind('-', 0, 77)
+            if hyphen_idx >= 0 and hyphen_idx > idx:
+                idx = hyphen_idx
+            if idx == 76:
+                wrapped_lines.append('"' + content[0:idx] + '"\n')
+                content = content[idx:]
+            elif idx >= 0:
+                wrapped_lines.append('"' + content[0:idx + 1] + '"\n')
+                content = content[idx + 1:]
+            else:
+                idx = content.find(' ', 76)
+                if idx > 0:
+                    wrapped_lines.append('"' + content[0:idx] + '"\n')
+                    content = content[idx:]
+                else:
+                    wrapped_lines.append('"' + content + '"\n')
+                    content = ''
+                    break
+        if len(content) > 0:
+            wrapped_lines.append('"' + content + '"\n')
+    else:
+        wrapped_lines.append(line)
+    return wrapped_lines
 
 
 def main(args):
     # Load source/target po files
-    source_catalogs = load_catalogs(args.source)
-    target_catalogs = load_catalogs(args.target)
+    source_po_files = load_po_files(args.source)
+    target_po_files = load_po_files(args.target)
 
-    # Fill/format target catalogs
-    for path in source_catalogs:
-        source_catalog = source_catalogs[path]
+    # Format target catalogs
+    for path in source_po_files:
+        source_lines = source_po_files[path]
         source_path = os.path.join(args.source, path)
-        if path in target_catalogs:
+        if path in target_po_files:
             target_path = os.path.join(args.target, path)
             print(target_path)
-            target_catalog = target_catalogs[path]
-            # target_catalog.header_comment = source_catalog.header_comment
-            # target_catalog.fuzzy = source_catalog.fuzzy
-            # target_catalog.mime_headers = source_catalog.mime_headers
-            for source_message in source_catalog:
-                if source_message.id == source_message.string:
-                    target_message = target_catalog.get(source_message.id)
-                    if target_message is not None and len(target_message.string) == 0:
-                        target_message.string = target_message.id
-                        print("\t'%s' is filled" % target_message.string)
+            target_lines = target_po_files[path]
 
-            # Write target once
-            with io.open(target_path, 'wb') as f:
-                pofile.write_po(f, target_catalog, width=79)
+            source_header_len = get_header_len(source_lines)
+            target_header_len = get_header_len(target_lines)
+            if source_lines[0:source_header_len] == target_lines[0:target_header_len]:
+                print("Already formatted")
+                continue
 
-            # Copy headers
-            source_lines, source_header_len = load_lines_with_header_len(source_path)
-            target_lines, target_header_len = load_lines_with_header_len(target_path)
-            final_lines = source_lines[0:source_header_len] + target_lines[target_header_len:]
+            final_lines = source_lines[0:source_header_len]
+            for target_line in target_lines[target_header_len:]:
+                if target_line.startswith('msgstr '):
+                    final_lines.extend(wrap_msgstr_line(target_line))
+                else:
+                    final_lines.append(target_line)
+
             with open(target_path, mode='w') as f:
                 f.writelines(final_lines)
 
+    print("Completed")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Format target files')
